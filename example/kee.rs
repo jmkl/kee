@@ -1,4 +1,4 @@
-use tsck_kee::{Event, TKeyPair, Tsck, kpairs};
+use kee::{Event, Kee, TKeePair, kpairs};
 
 fn main() -> anyhow::Result<()> {
     let keypairs = kpairs! {
@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
         (C-S-b 		=> app::ControlShiftB),
     };
 
-    Tsck::new()
+    Kee::new()
         .register_hotkeys(keypairs)?
         .on_message(|event| match event {
             Event::Keys(k, f) => {

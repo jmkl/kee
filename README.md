@@ -1,6 +1,11 @@
 ## USAGE UPDATE
+```
+git clone https://github.com/jmkl/kee.git
+cd kee
+cargo run --example kee
+```
 ```rust
-use tsck_kee::{Event, TKeyPair, Tsck, kpairs};
+use kee::{Event, TKeyPair, Tsck, kpairs};
 
 fn main() -> anyhow::Result<()> {
    
