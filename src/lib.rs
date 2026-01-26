@@ -1,13 +1,13 @@
 mod beep;
+mod kee_keys;
 mod kee_manager;
-mod tsck_keys;
 use flume::{Receiver, Sender, unbounded};
 pub use kee_manager::TsckKeeManager;
 use parking_lot::Mutex;
 use std::sync::Arc;
 mod macros;
 use crate::{beep::BeepController, kee_manager::Modifier};
-pub use tsck_keys::TKeyPair;
+pub use kee_keys::TKeePair;
 
 type EventHandler = Arc<dyn Fn(&Event) + Send + Sync + 'static>;
 
@@ -17,7 +17,7 @@ pub enum Event {
     Shutdown,
 }
 
-pub struct Tsck {
+pub struct Kee {
     hotkey_manager: TsckKeeManager,
     sender: Sender<Event>,
     receiver: Receiver<Event>,
@@ -25,7 +25,7 @@ pub struct Tsck {
     beep_controller: Option<Arc<Mutex<BeepController>>>,
 }
 
-impl Tsck {
+impl Kee {
     pub fn new() -> Self {
         let (tx, rx) = unbounded();
         Self {
@@ -45,7 +45,7 @@ impl Tsck {
         self
     }
 
-    pub fn register_hotkeys(&mut self, keypairs: Vec<TKeyPair>) -> anyhow::Result<&mut Self> {
+    pub fn register_hotkeys(&mut self, keypairs: Vec<TKeePair>) -> anyhow::Result<&mut Self> {
         let keypairs = Arc::new(keypairs);
         let keys = keypairs.iter().map(|kp| kp.key.as_str()).collect();
         let sender = self.sender.clone();
@@ -54,12 +54,12 @@ impl Tsck {
         _ = self
             .hotkey_manager
             .register_hotkeys(keys, move |cb| match cb {
-                kee_manager::HotkeyEvent::OnKey(k) => {
+                kee_manager::KeeEvent::OnKey(k) => {
                     if let Some(pair) = cloned_pairs.iter().find(|p| p.key == k) {
                         _ = sender.send(Event::Keys(pair.key.clone(), pair.func.clone()));
                     }
                 }
-                kee_manager::HotkeyEvent::OnModifier(modifier, state) => {
+                kee_manager::KeeEvent::OnModifier(modifier, state) => {
                     if modifier == Modifier::Win {
                         if let Some(controller) = beep_controller.as_ref() {
                             let mut guard = controller.lock();
@@ -92,7 +92,7 @@ impl Tsck {
     }
 }
 
-impl Default for Tsck {
+impl Default for Kee {
     fn default() -> Self {
         Self::new()
     }

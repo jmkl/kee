@@ -282,6 +282,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kee"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flume",
+ "once_cell",
+ "parking_lot",
+ "rodio",
+ "serde",
+ "serde_json",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -891,20 +905,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3198b4b0a8e11f09dd03e133c0280504d0801269e9afa46362ffde1cbeebf44"
 dependencies = [
  "winnow",
-]
-
-[[package]]
-name = "tsck-kee"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "flume",
- "once_cell",
- "parking_lot",
- "rodio",
- "serde",
- "serde_json",
- "windows 0.62.2",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 use anyhow::bail;
 
-pub struct TKeyPair {
+pub struct TKeePair {
     pub key: String,
     pub func: String,
 }

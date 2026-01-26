@@ -1,3 +1,4 @@
+use crate::kee_keys::TsckKeeBinding;
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -11,10 +12,8 @@ use windows::Win32::{
     },
 };
 
-use crate::tsck_keys::TsckKeeBinding;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HotkeyEvent {
+pub enum KeeEvent {
     OnKey(String),
     OnModifier(Modifier, bool),
 }
@@ -27,23 +26,23 @@ pub enum Modifier {
     Win,
 }
 
-type TsckEventCb = std::sync::Arc<dyn Fn(HotkeyEvent) + Send + Sync>;
+type KeeEventCallback = std::sync::Arc<dyn Fn(KeeEvent) + Send + Sync>;
 
 struct HotkeyState {
     hotkey_names: HashMap<(u16, u32), String>,
-    event_callbacks: Vec<TsckEventCb>,
+    event_callbacks: Vec<KeeEventCallback>,
     key_states: [bool; 256],
 }
 
-static HOTKEY_STATE: OnceLock<Mutex<HotkeyState>> = OnceLock::new();
-static CALLBACK_CHANNEL: OnceLock<flume::Sender<HotkeyEvent>> = OnceLock::new();
+static KEE_STATE: OnceLock<Mutex<HotkeyState>> = OnceLock::new();
+static CALLBACK_CHANNEL: OnceLock<flume::Sender<KeeEvent>> = OnceLock::new();
 
 #[derive(Debug)]
 pub struct TsckKeeManager;
 
 impl TsckKeeManager {
     pub fn new() -> Self {
-        HOTKEY_STATE.get_or_init(|| {
+        KEE_STATE.get_or_init(|| {
             Mutex::new(HotkeyState {
                 hotkey_names: HashMap::new(),
                 event_callbacks: Vec::new(),
@@ -51,14 +50,14 @@ impl TsckKeeManager {
             })
         });
 
-        let (tx, rx) = flume::unbounded::<HotkeyEvent>();
+        let (tx, rx) = flume::unbounded::<KeeEvent>();
         CALLBACK_CHANNEL.get_or_init(|| tx);
 
         let _ = std::thread::Builder::new()
             .name("hotkey-callback-executor".to_string())
             .spawn(move || {
                 while let Ok(event) = rx.recv() {
-                    let state = HOTKEY_STATE.get().expect("HOTKEY_STATE initialized");
+                    let state = KEE_STATE.get().expect("HOTKEY_STATE initialized");
                     let event_callbacks = {
                         let hotkey_state = state.lock();
                         hotkey_state.event_callbacks.clone()
@@ -86,13 +85,13 @@ impl TsckKeeManager {
                     eprintln!("Failed to unhook keyboard hook: {:?}", e);
                 }
             });
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(50));
         Self
     }
 
     pub fn register_hotkeys<M>(&self, hotkeys: Vec<&str>, mod_callback: M) -> anyhow::Result<()>
     where
-        M: Fn(HotkeyEvent) + Send + Sync + 'static,
+        M: Fn(KeeEvent) + Send + Sync + 'static,
     {
         let bindings: Vec<(u16, u32, String)> = hotkeys
             .iter()
@@ -104,7 +103,7 @@ impl TsckKeeManager {
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
-        let state = HOTKEY_STATE
+        let state = KEE_STATE
             .get()
             .expect("HOTKEY_STATE should be initialized in new()");
 
@@ -131,9 +130,9 @@ impl TsckKeeManager {
 
     pub fn register_event_callback<F>(&self, callback: F)
     where
-        F: Fn(HotkeyEvent) + Send + Sync + 'static,
+        F: Fn(KeeEvent) + Send + Sync + 'static,
     {
-        let state = HOTKEY_STATE
+        let state = KEE_STATE
             .get()
             .expect("HOTKEY_STATE should be initialized in new()");
 
@@ -159,7 +158,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
     let vk_code = (unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) }).vkCode as u16;
     let msg = wparam.0 as u32;
 
-    let Some(state) = HOTKEY_STATE.get() else {
+    let Some(state) = KEE_STATE.get() else {
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     };
 
@@ -183,7 +182,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 if let Some(modifier) = modifier_event {
                     if !was_pressed {
                         if let Some(tx) = CALLBACK_CHANNEL.get() {
-                            let _ = tx.try_send(HotkeyEvent::OnModifier(modifier, true));
+                            let _ = tx.try_send(KeeEvent::OnModifier(modifier, true));
                         }
                     }
                 }
@@ -226,7 +225,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
 
                 if let Some(name) = hotkey_matched {
                     if let Some(tx) = CALLBACK_CHANNEL.get() {
-                        let _ = tx.try_send(HotkeyEvent::OnKey(name.clone()));
+                        let _ = tx.try_send(KeeEvent::OnKey(name.clone()));
                     }
 
                     let is_system_key = vk_code == 0x5B
@@ -250,7 +249,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
 
                 if let Some(modifier) = modifier_event {
                     if let Some(tx) = CALLBACK_CHANNEL.get() {
-                        let _ = tx.try_send(HotkeyEvent::OnModifier(modifier, false));
+                        let _ = tx.try_send(KeeEvent::OnModifier(modifier, false));
                     }
                 }
 
