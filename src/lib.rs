@@ -1,14 +1,16 @@
 mod beep;
+mod config;
 mod kee_keys;
 mod kee_manager;
+mod kee_windows;
 use flume::{Receiver, Sender, unbounded};
 pub use kee_manager::TsckKeeManager;
 use parking_lot::Mutex;
 use std::sync::Arc;
 mod macros;
-use crate::{beep::BeepController, kee_manager::Modifier};
-pub use kee_keys::TKeePair;
-
+use crate::{beep::BeepController, config::Config, kee_manager::Modifier};
+pub use kee_keys::{TKeePair, TKeePairList};
+pub use kee_windows::list_windows;
 type EventHandler = Arc<dyn Fn(&Event) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,7 @@ pub struct Kee {
     receiver: Receiver<Event>,
     handler: Option<EventHandler>,
     beep_controller: Option<Arc<Mutex<BeepController>>>,
+    config: Config,
 }
 
 impl Kee {
@@ -34,6 +37,7 @@ impl Kee {
             receiver: rx,
             handler: None,
             beep_controller: BeepController::new().ok().map(|f| Arc::new(Mutex::new(f))),
+            config: Config::new(),
         }
     }
 
@@ -44,9 +48,13 @@ impl Kee {
         self.handler = Some(Arc::new(f));
         self
     }
+    pub fn get_apps(&self) -> Vec<String> {
+        self.config.get_config().apps
+    }
 
-    pub fn register_hotkeys(&mut self, keypairs: Vec<TKeePair>) -> anyhow::Result<&mut Self> {
-        let keypairs = Arc::new(keypairs);
+    fn register_hotkeys(&self) -> anyhow::Result<()> {
+        let config = self.config.get_config();
+        let keypairs = Arc::new(config.kees.0);
         let keys = keypairs.iter().map(|kp| kp.key.as_str()).collect();
         let sender = self.sender.clone();
         let cloned_pairs = keypairs.clone();
@@ -73,10 +81,13 @@ impl Kee {
                 }
             });
 
-        Ok(self)
+        Ok(())
     }
 
     pub fn run(&self) {
+        if let Err(_) = self.register_hotkeys() {
+            panic!("Failed to registering hotkey");
+        }
         if let Some(ref handler) = self.handler {
             while let Ok(event) = self.receiver.recv() {
                 if matches!(event, Event::Shutdown) {
