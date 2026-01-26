@@ -5,7 +5,7 @@ edition = "2024"
 
 [[example]]
 name = "kee"
-path = "example/tsck.rs"
+path = "example/kee.rs"
 
 [dependencies]
 anyhow = "1.0"

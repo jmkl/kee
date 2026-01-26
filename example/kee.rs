@@ -1,10 +1,7 @@
-## USAGE
-```rust
 use tsck_kee::{Event, TKeyPair, Tsck, kpairs};
 
 fn main() -> anyhow::Result<()> {
-   
-		let keypairs = kpairs! {
+    let keypairs = kpairs! {
         (M-1 			=> app::Move),
         (M-2 			=> app::Minimize),
         (C-S-b 		=> app::ControlShiftB),
@@ -22,5 +19,3 @@ fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-
-```

@@ -1,7 +1,6 @@
 mod beep;
 mod kee_manager;
 mod tsck_keys;
-mod tsck_manager;
 use flume::{Receiver, Sender, unbounded};
 pub use kee_manager::TsckKeeManager;
 use parking_lot::Mutex;
