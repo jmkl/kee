@@ -1,8 +1,93 @@
-use anyhow::bail;
+use std::collections::HashMap;
 
+use anyhow::bail;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TKeePair {
     pub key: String,
     pub func: String,
+}
+impl TKeePair {
+    pub fn new(key: impl Into<String>, func: impl Into<String>) -> TKeePair {
+        TKeePair {
+            key: key.into(),
+            func: func.into(),
+        }
+    }
+}
+// Custom deserialization from map format to Vec<TKeePair>
+impl<'de> Deserialize<'de> for TKeePair {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // This is for individual TKeePair, but we need custom logic for Vec
+        #[derive(Deserialize)]
+        struct TKeePairHelper {
+            key: String,
+            func: String,
+        }
+
+        let helper = TKeePairHelper::deserialize(deserializer)?;
+        Ok(TKeePair {
+            key: helper.key,
+            func: helper.func,
+        })
+    }
+}
+
+impl Serialize for TKeePair {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct TKeePairHelper<'a> {
+            key: &'a str,
+            func: &'a str,
+        }
+
+        TKeePairHelper {
+            key: &self.key,
+            func: &self.func,
+        }
+        .serialize(serializer)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TKeePairList(pub Vec<TKeePair>);
+
+impl<'de> Deserialize<'de> for TKeePairList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let map = HashMap::<String, String>::deserialize(deserializer)?;
+        let pairs: Vec<TKeePair> = map
+            .into_iter()
+            .map(|(key, func)| TKeePair { key, func })
+            .collect();
+
+        Ok(TKeePairList(pairs))
+    }
+}
+
+impl Serialize for TKeePairList {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Convert Vec<TKeePair> to HashMap<String, String>
+        let map: HashMap<&str, &str> = self
+            .0
+            .iter()
+            .map(|kp| (kp.key.as_str(), kp.func.as_str()))
+            .collect();
+
+        map.serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
