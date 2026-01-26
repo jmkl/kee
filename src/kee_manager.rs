@@ -13,11 +13,10 @@ use windows::Win32::{
 
 use crate::tsck_keys::TsckKeeBinding;
 
-// Event type to distinguish between hotkey and modifier events
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyEvent {
-    OnKey(String),              // Hotkey triggered (e.g., "Ctrl+Shift+A")
-    OnModifier(Modifier, bool), // Modifier state changed (modifier, is_pressed)
+    OnKey(String),
+    OnModifier(Modifier, bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,24 +59,11 @@ impl TsckKeeManager {
             .spawn(move || {
                 while let Ok(event) = rx.recv() {
                     let state = HOTKEY_STATE.get().expect("HOTKEY_STATE initialized");
-
-                    // Get event callbacks first
                     let event_callbacks = {
                         let hotkey_state = state.lock();
                         hotkey_state.event_callbacks.clone()
                     };
 
-                    // // Handle OnKey event with old-style callback
-                    // if let HotkeyEvent::OnKey(name) = &event {
-                    //     let hotkey_state = state.lock();
-                    //     if let Some(cb) = hotkey_state.callbacks.values().next() {
-                    //         let cb_clone = cb.clone();
-                    //         drop(hotkey_state);
-                    //         cb_clone(name);
-                    //     }
-                    // }
-
-                    // Execute all event callbacks
                     for callback in event_callbacks {
                         callback(event.clone());
                     }
@@ -95,9 +81,7 @@ impl TsckKeeManager {
                 };
                 let mut msg = MSG::default();
 
-                while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
-                    // Message loop for hook
-                }
+                while GetMessageW(&mut msg, None, 0, 0).0 > 0 {}
                 if let Err(e) = UnhookWindowsHookEx(hook) {
                     eprintln!("Failed to unhook keyboard hook: {:?}", e);
                 }
@@ -145,7 +129,6 @@ impl TsckKeeManager {
         Ok(())
     }
 
-    // New API - Register event callback for both hotkeys and modifiers
     pub fn register_event_callback<F>(&self, callback: F)
     where
         F: Fn(HotkeyEvent) + Send + Sync + 'static,
@@ -189,16 +172,14 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 let was_pressed = key_states[vk_code as usize];
                 key_states[vk_code as usize] = true;
 
-                // Check if this is a modifier key press
                 let modifier_event = match vk_code {
-                    0xA2 | 0xA3 => Some(Modifier::Ctrl),  // Left/Right Ctrl
-                    0xA0 | 0xA1 => Some(Modifier::Shift), // Left/Right Shift
-                    0x12 => Some(Modifier::Alt),          // Alt
-                    0x5B | 0x5C => Some(Modifier::Win),   // Left/Right Win
+                    0xA2 | 0xA3 => Some(Modifier::Ctrl),
+                    0xA0 | 0xA1 => Some(Modifier::Shift),
+                    0x12 => Some(Modifier::Alt),
+                    0x5B | 0x5C => Some(Modifier::Win),
                     _ => None,
                 };
 
-                // Send modifier press event (only on first press, not repeat)
                 if let Some(modifier) = modifier_event {
                     if !was_pressed {
                         if let Some(tx) = CALLBACK_CHANNEL.get() {
@@ -214,7 +195,6 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
 
                 let mut hotkey_matched = None;
 
-                // Find matching hotkey
                 for (&(registered_vk, mod_flags), _callback) in hotkey_state.hotkey_names.iter() {
                     if registered_vk == vk_code {
                         let ctrl = (mod_flags & 0x0002) != 0;
@@ -239,13 +219,11 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                     }
                 }
 
-                // Update key_states back
                 drop(hotkey_state);
                 let mut hotkey_state = state.lock();
                 hotkey_state.key_states = key_states;
                 drop(hotkey_state);
 
-                // Send hotkey event
                 if let Some(name) = hotkey_matched {
                     if let Some(tx) = CALLBACK_CHANNEL.get() {
                         let _ = tx.try_send(HotkeyEvent::OnKey(name.clone()));
@@ -262,7 +240,6 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 }
             }
             WM_KEYUP | WM_SYSKEYUP => {
-                // Check if this is a modifier key release
                 let modifier_event = match vk_code {
                     0xA2 | 0xA3 => Some(Modifier::Ctrl),
                     0xA0 | 0xA1 => Some(Modifier::Shift),
@@ -271,7 +248,6 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                     _ => None,
                 };
 
-                // Send modifier release event
                 if let Some(modifier) = modifier_event {
                     if let Some(tx) = CALLBACK_CHANNEL.get() {
                         let _ = tx.try_send(HotkeyEvent::OnModifier(modifier, false));
