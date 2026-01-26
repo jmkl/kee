@@ -1,4 +1,4 @@
-## USAGE
+## USAGE UPDATE
 ```rust
 use tsck_kee::{Event, TKeyPair, Tsck, kpairs};
 
