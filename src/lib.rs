@@ -3,6 +3,7 @@ mod config;
 mod kee_keys;
 mod kee_manager;
 mod kee_windows;
+mod lexer;
 use flume::{Receiver, Sender, unbounded};
 pub use kee_manager::TsckKeeManager;
 use parking_lot::Mutex;
@@ -10,7 +11,8 @@ use std::sync::Arc;
 mod macros;
 use crate::{beep::BeepController, config::Config, kee_manager::Modifier};
 pub use kee_keys::{TKeePair, TKeePairList};
-pub use kee_windows::list_windows;
+pub use kee_windows::{get_current_active_window, list_windows};
+pub use lexer::{Command, Expr, parse_command};
 type EventHandler = Arc<dyn Fn(&Event) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
@@ -83,8 +85,27 @@ impl Kee {
 
         Ok(())
     }
-
     pub fn run(&self) {
+        if let Err(_) = self.register_hotkeys() {
+            panic!("Failed to registering hotkey");
+        }
+
+        let receiver = self.receiver.clone();
+        let handler = self.handler.clone();
+
+        std::thread::spawn(move || {
+            if let Some(handler) = handler {
+                while let Ok(event) = receiver.recv() {
+                    if matches!(event, Event::Shutdown) {
+                        break;
+                    }
+                    handler(&event);
+                }
+            }
+        });
+    }
+
+    pub fn run_blocking(&self) {
         if let Err(_) = self.register_hotkeys() {
             panic!("Failed to registering hotkey");
         }
