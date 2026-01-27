@@ -18,6 +18,7 @@ fn dotfile_root_dir() -> anyhow::Result<PathBuf> {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct KeeConfig {
     pub kees: TKeePairList,
+    pub monitors: Vec<(i32, i32)>,
     pub apps: Vec<String>,
 }
 
@@ -36,19 +37,27 @@ impl Config {
         let default_pairs = TKeePairList(vec![TKeePair::new("M-1", "app::LaunchZen")]);
         let kee_config = KeeConfig {
             kees: default_pairs,
+            monitors: vec![(2560, 1440), (1920, 1080)],
             apps: Vec::new(),
         };
         if let Ok(dir) = dotfile_root_dir() {
             let p = Path::new(&dir).join("kee.json");
             if p.exists() {
                 if let Ok(s) = std::fs::read_to_string(p) {
-                    if let Ok(result) = serde_json::from_str::<KeeConfig>(&s) {
-                        return result;
+                    match serde_json::from_str::<KeeConfig>(&s) {
+                        Ok(result) => {
+                            return result;
+                        }
+                        Err(err) => {
+                            println!("{err}");
+                        }
                     }
                 }
             } else {
                 if let Ok(content) = serde_json::to_string_pretty(&kee_config) {
                     _ = std::fs::write(p, content);
+                } else {
+                    println!("Error");
                 }
             }
         }
@@ -66,7 +75,7 @@ mod test_config {
     #[test]
     fn test_config() -> anyhow::Result<()> {
         let config = Config::new();
-        println!("{:?}", config.get_config());
+        println!("{:?}", config);
         Ok(())
     }
 }

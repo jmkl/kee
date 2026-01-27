@@ -6,14 +6,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-use windows::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{
-        HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
-    },
-};
 
 // ============================================================================
 // Type Definitions
@@ -24,10 +18,30 @@ type Handle = *mut std::ffi::c_void;
 type Dword = u32;
 type Bool = i32;
 type LParam = isize;
+type HMonitor = isize;
+type Hdc = isize;
 
 // ============================================================================
 // Constants
 // ============================================================================
+// SetWindowPos constants
+const HWND_TOP: Hwnd = 0 as Hwnd;
+const HWND_BOTTOM: Hwnd = 1 as Hwnd;
+const HWND_TOPMOST: Hwnd = (-1isize) as Hwnd;
+const HWND_NOTOPMOST: Hwnd = (-2isize) as Hwnd;
+
+// SetWindowPos flags
+const SWP_NOSIZE: u32 = 0x0001;
+const SWP_NOMOVE: u32 = 0x0002;
+const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOREDRAW: u32 = 0x0008;
+const SWP_NOACTIVATE: u32 = 0x0010;
+const SWP_FRAMECHANGED: u32 = 0x0020;
+const SWP_SHOWWINDOW: u32 = 0x0040;
+const SWP_HIDEWINDOW: u32 = 0x0080;
+const SWP_NOCOPYBITS: u32 = 0x0100;
+const SWP_NOOWNERZORDER: u32 = 0x0200;
+const SWP_NOSENDCHANGING: u32 = 0x0400;
 
 const SW_RESTORE: i32 = 9;
 const SW_SHOW: i32 = 5;
@@ -37,12 +51,63 @@ const TRUE: Bool = 1;
 const FALSE: Bool = 0;
 const PROCESS_QUERY_INFORMATION: Dword = 0x0400;
 const PROCESS_VM_READ: Dword = 0x0010;
+const SM_CXSCREEN: i32 = 0;
+const SM_CYSCREEN: i32 = 1;
+const MONITOR_DEFAULTTONEAREST: Dword = 2;
+const MONITOR_DEFAULTTOPRIMARY: Dword = 1;
+const MONITOR_DEFAULTTONULL: Dword = 0;
+const MONITORINFOF_PRIMARY: Dword = 1;
 
 pub static SUPPRESS_MODS: AtomicBool = AtomicBool::new(false);
 
 // ============================================================================
-// Windows API Function Declarations
+// Monitor Structures
 // ============================================================================
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MonitorInfo {
+    pub cb_size: u32,
+    pub rc_monitor: RECT,
+    pub rc_work: RECT,
+    pub dw_flags: Dword,
+}
+
+impl Default for MonitorInfo {
+    fn default() -> Self {
+        Self {
+            cb_size: std::mem::size_of::<MonitorInfo>() as u32,
+            rc_monitor: RECT::default(),
+            rc_work: RECT::default(),
+            dw_flags: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MonitorDetails {
+    pub handle: HMonitor,
+    pub width: i32,
+    pub height: i32,
+    pub x: i32,
+    pub y: i32,
+    pub work_area: RECT,
+    pub is_primary: bool,
+}
+
+type MonitorEnumProc = unsafe extern "system" fn(
+    hmonitor: HMonitor,
+    hdc: Hdc,
+    lp_rc_monitor: *mut RECT,
+    dw_data: LParam,
+) -> Bool;
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -52,10 +117,12 @@ unsafe extern "system" {
     ) -> Bool;
     fn IsWindowVisible(hWnd: Hwnd) -> Bool;
     fn IsIconic(hWnd: Hwnd) -> Bool;
+    fn GetForegroundWindow() -> HWND;
     fn IsWindow(hWnd: Hwnd) -> Bool;
     fn GetWindowTextLengthW(hWnd: Hwnd) -> i32;
     fn GetClassNameW(hwnd: Hwnd, lpclassname: *mut u16, nmaxcount: i32) -> i32;
     fn GetWindowTextW(hWnd: Hwnd, lpString: *mut u16, nMaxCount: i32) -> i32;
+    fn GetWindowRect(hwnd: Hwnd, rect: *mut RECT) -> Bool;
     fn SetForegroundWindow(hWnd: Hwnd) -> Bool;
     fn BringWindowToTop(hWnd: Hwnd) -> Bool;
     fn ShowWindow(hWnd: Hwnd, nCmdShow: i32) -> Bool;
@@ -63,6 +130,29 @@ unsafe extern "system" {
     fn SetFocus(hWnd: Hwnd) -> Hwnd;
     fn SetActiveWindow(hWnd: Hwnd) -> Hwnd;
     fn AttachThreadInput(idAttach: Dword, idAttachTo: Dword, fAttach: Bool) -> Bool;
+    fn GetSystemMetrics(n_index: i32) -> i32;
+    fn GetClientRect(hwnd: Hwnd, lp_rect: *mut RECT) -> Bool;
+
+    // Monitor functions
+    fn MonitorFromWindow(hwnd: Hwnd, dw_flags: Dword) -> HMonitor;
+    fn MonitorFromPoint(pt: Point, dw_flags: Dword) -> HMonitor;
+    fn GetMonitorInfoW(hmonitor: HMonitor, lpmi: *mut MonitorInfo) -> Bool;
+    fn EnumDisplayMonitors(
+        hdc: Hdc,
+        lprc_clip: *const RECT,
+        lpfn_enum: Option<MonitorEnumProc>,
+        dw_data: LParam,
+    ) -> Bool;
+    // Window positioning
+    fn SetWindowPos(
+        hWnd: Hwnd,
+        hWndInsertAfter: Hwnd,
+        X: i32,
+        Y: i32,
+        cx: i32,
+        cy: i32,
+        uFlags: u32,
+    ) -> Bool;
 }
 
 #[link(name = "kernel32")]
@@ -98,11 +188,34 @@ impl SafeHWND {
 }
 
 #[derive(Debug, Clone)]
+pub struct WinSize {
+    pub width: i32,
+    pub height: i32,
+}
+impl WinSize {
+    pub fn display(&self) -> String {
+        format!("[w:{}, h:{}]", self.width, self.height)
+    }
+}
+#[derive(Debug, Clone)]
+pub struct WinPos {
+    pub x: i32,
+    pub y: i32,
+}
+impl WinPos {
+    pub fn display(&self) -> String {
+        format!("[x:{}, y:{}]", self.x, self.y)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct WindowInfo {
     pub hwnd: SafeHWND,
     title: String,
     exe_path: String,
     class_name: String,
+    size: WinSize,
+    position: WinPos,
 }
 
 impl WindowInfo {
@@ -116,6 +229,14 @@ impl WindowInfo {
 
     pub fn class(&self) -> &String {
         &self.class_name
+    }
+
+    pub fn size(&self) -> &WinSize {
+        &self.size
+    }
+
+    pub fn position(&self) -> &WinPos {
+        &self.position
     }
 
     pub fn title(&self) -> String {
@@ -155,6 +276,48 @@ impl WindowInfo {
     pub fn minimize(&self) -> Result<(), String> {
         WindowManager::minimize_window(self.hwnd.as_hwnd())
     }
+
+    /// Get the monitor this window is on
+    pub fn get_monitor(&self) -> Option<MonitorDetails> {
+        MonitorManager::get_monitor_from_window(self.hwnd.as_hwnd())
+    }
+    /// Move this window to specific position
+    pub fn move_to(&self, x: i32, y: i32) -> Result<(), String> {
+        WindowManager::move_window(self.hwnd.as_hwnd(), x, y)
+    }
+
+    /// Resize this window
+    pub fn resize(&self, width: i32, height: i32) -> Result<(), String> {
+        WindowManager::resize_window(self.hwnd.as_hwnd(), width, height)
+    }
+
+    /// Set both position and size
+    pub fn set_rect(&self, x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
+        WindowManager::set_window_rect(self.hwnd.as_hwnd(), x, y, width, height)
+    }
+
+    /// Center window on current monitor
+    pub fn center_on_monitor(&self) -> Result<(), String> {
+        if let Some(monitor) = self.get_monitor() {
+            let new_x = monitor.x + (monitor.width - self.size.width) / 2;
+            let new_y = monitor.y + (monitor.height - self.size.height) / 2;
+            self.move_to(new_x, new_y)
+        } else {
+            Err("Could not get monitor information".to_string())
+        }
+    }
+
+    /// Fit window to monitor work area
+    pub fn fit_to_monitor(&self) -> Result<(), String> {
+        if let Some(monitor) = self.get_monitor() {
+            let work_area = monitor.work_area;
+            let width = work_area.right - work_area.left;
+            let height = work_area.bottom - work_area.top;
+            self.set_rect(work_area.left, work_area.top, width, height)
+        } else {
+            Err("Could not get monitor information".to_string())
+        }
+    }
 }
 
 // ============================================================================
@@ -184,6 +347,86 @@ impl WindowManager {
 
             // Method 2: If Method 1 fails, use the workaround
             Self::force_window_to_front(hwnd)
+        }
+    }
+    /// Move window to specific position
+    pub fn move_window(hwnd: Hwnd, x: i32, y: i32) -> Result<(), String> {
+        unsafe {
+            if IsWindow(hwnd) == FALSE {
+                return Err("Invalid window handle".to_string());
+            }
+
+            if SetWindowPos(hwnd, HWND_TOP, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER) != FALSE {
+                Ok(())
+            } else {
+                Err("Failed to move window".to_string())
+            }
+        }
+    }
+
+    /// Resize window to specific size
+    pub fn resize_window(hwnd: Hwnd, width: i32, height: i32) -> Result<(), String> {
+        unsafe {
+            if IsWindow(hwnd) == FALSE {
+                return Err("Invalid window handle".to_string());
+            }
+
+            if SetWindowPos(
+                hwnd,
+                HWND_TOP,
+                0,
+                0,
+                width,
+                height,
+                SWP_NOMOVE | SWP_NOZORDER,
+            ) != FALSE
+            {
+                Ok(())
+            } else {
+                Err("Failed to resize window".to_string())
+            }
+        }
+    }
+
+    /// Move and resize window in one call
+    pub fn set_window_rect(
+        hwnd: Hwnd,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> Result<(), String> {
+        unsafe {
+            if IsWindow(hwnd) == FALSE {
+                return Err("Invalid window handle".to_string());
+            }
+
+            if SetWindowPos(hwnd, HWND_TOP, x, y, width, height, SWP_NOZORDER) != FALSE {
+                Ok(())
+            } else {
+                Err("Failed to set window rect".to_string())
+            }
+        }
+    }
+
+    /// Make window always on top
+    pub fn set_always_on_top(hwnd: Hwnd, always_on_top: bool) -> Result<(), String> {
+        unsafe {
+            if IsWindow(hwnd) == FALSE {
+                return Err("Invalid window handle".to_string());
+            }
+
+            let hwnd_after = if always_on_top {
+                HWND_TOPMOST
+            } else {
+                HWND_NOTOPMOST
+            };
+
+            if SetWindowPos(hwnd, hwnd_after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE) != FALSE {
+                Ok(())
+            } else {
+                Err("Failed to set always on top".to_string())
+            }
         }
     }
 
@@ -274,6 +517,122 @@ impl WindowManager {
 }
 
 // ============================================================================
+// Monitor Manager
+// ============================================================================
+
+pub struct MonitorManager;
+
+impl MonitorManager {
+    /// Get primary monitor size
+    pub fn get_primary_monitor_size() -> (i32, i32) {
+        unsafe {
+            let width = GetSystemMetrics(SM_CXSCREEN);
+            let height = GetSystemMetrics(SM_CYSCREEN);
+            (width, height)
+        }
+    }
+
+    /// Get monitor from window
+    pub fn get_monitor_from_window(hwnd: Hwnd) -> Option<MonitorDetails> {
+        unsafe {
+            let hmonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if hmonitor == 0 {
+                return None;
+            }
+            Self::get_monitor_details(hmonitor)
+        }
+    }
+
+    /// Get monitor from point
+    pub fn get_monitor_from_point(x: i32, y: i32) -> Option<MonitorDetails> {
+        unsafe {
+            let point = Point { x, y };
+            let hmonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+            if hmonitor == 0 {
+                return None;
+            }
+            Self::get_monitor_details(hmonitor)
+        }
+    }
+
+    /// Get monitor info
+    fn get_monitor_info(hmonitor: HMonitor) -> Option<MonitorInfo> {
+        unsafe {
+            let mut monitor_info = MonitorInfo::default();
+            if GetMonitorInfoW(hmonitor, &mut monitor_info) != FALSE {
+                Some(monitor_info)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Get monitor details
+    pub fn get_monitor_details(hmonitor: HMonitor) -> Option<MonitorDetails> {
+        Self::get_monitor_info(hmonitor).map(|info| {
+            let rect = info.rc_monitor;
+            MonitorDetails {
+                handle: hmonitor,
+                width: rect.right - rect.left,
+                height: rect.bottom - rect.top,
+                x: rect.left,
+                y: rect.top,
+                work_area: info.rc_work,
+                is_primary: (info.dw_flags & MONITORINFOF_PRIMARY) != 0,
+            }
+        })
+    }
+
+    /// Get monitor size
+    pub fn get_monitor_size(hmonitor: HMonitor) -> Option<(i32, i32)> {
+        Self::get_monitor_details(hmonitor).map(|details| (details.width, details.height))
+    }
+
+    /// Get current monitor size (from foreground window)
+    pub fn get_current_monitor_size() -> Option<(i32, i32)> {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.is_invalid() {
+                return None;
+            }
+            let hmonitor = MonitorFromWindow(hwnd.0 as Hwnd, MONITOR_DEFAULTTONEAREST);
+            if hmonitor == 0 {
+                return None;
+            }
+            Self::get_monitor_size(hmonitor)
+        }
+    }
+
+    /// Enumerate all monitors
+    pub fn enumerate_monitors() -> Vec<MonitorDetails> {
+        unsafe {
+            let mut monitors = Vec::new();
+
+            EnumDisplayMonitors(
+                0,
+                std::ptr::null(),
+                Some(enum_monitor_callback),
+                &mut monitors as *mut Vec<MonitorDetails> as LParam,
+            );
+
+            monitors
+        }
+    }
+
+    /// Get primary monitor
+    pub fn get_primary_monitor() -> Option<MonitorDetails> {
+        Self::enumerate_monitors()
+            .into_iter()
+            .find(|m| m.is_primary)
+    }
+
+    /// Get monitor count
+    pub fn get_monitor_count() -> usize {
+        Self::enumerate_monitors().len()
+    }
+}
+
+// ============================================================================
 // Internal Helper Functions
 // ============================================================================
 
@@ -292,7 +651,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: Hwnd, lparam: LParam) -> B
         Some(t) if !t.is_empty() => t,
         _ => return TRUE, // Skip windows without titles
     };
-
+    let (size, position) = get_window_size_and_position(hwnd);
     // Get process executable path
     let exe_path = get_process_path(hwnd).unwrap_or_else(|| String::from("UNKNOWN_EXE_PATH"));
 
@@ -301,7 +660,24 @@ unsafe extern "system" fn enum_windows_callback(hwnd: Hwnd, lparam: LParam) -> B
         title,
         exe_path,
         class_name,
+        size,
+        position,
     });
+
+    TRUE // Continue enumeration
+}
+
+unsafe extern "system" fn enum_monitor_callback(
+    hmonitor: HMonitor,
+    _hdc: Hdc,
+    _lp_rc_monitor: *mut RECT,
+    dw_data: LParam,
+) -> Bool {
+    let monitors = unsafe { &mut *(dw_data as *mut Vec<MonitorDetails>) };
+
+    if let Some(details) = MonitorManager::get_monitor_details(hmonitor) {
+        monitors.push(details);
+    }
 
     TRUE // Continue enumeration
 }
@@ -380,6 +756,65 @@ fn get_process_path(hwnd: Hwnd) -> Option<String> {
     }
 }
 
+fn get_window_rect(hwnd: Hwnd) -> RECT {
+    unsafe {
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect);
+        rect
+    }
+}
+
+fn get_window_size_and_position(hwnd: Hwnd) -> (WinSize, WinPos) {
+    let rect = get_window_rect(hwnd);
+
+    let x = rect.left;
+    let y = rect.top;
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+
+    (WinSize { width, height }, WinPos { x, y })
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+pub fn get_current_active_window() -> Option<WindowInfo> {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        let hwnd_ptr = hwnd.0 as Hwnd;
+
+        if hwnd_ptr.is_null() || hwnd_ptr == 0 as Hwnd {
+            return None;
+        }
+
+        // Check if window is valid and visible
+        if IsWindow(hwnd_ptr) == FALSE || IsWindowVisible(hwnd_ptr) == FALSE {
+            return None;
+        }
+
+        // Get window info
+        let class_name = get_class_name(hwnd_ptr).unwrap_or_else(|| String::from("UNKNOWN_CLASS"));
+
+        let title = match get_window_title(hwnd_ptr) {
+            Some(t) if !t.is_empty() => t,
+            _ => String::from(""),
+        };
+
+        let (size, position) = get_window_size_and_position(hwnd_ptr);
+        let exe_path =
+            get_process_path(hwnd_ptr).unwrap_or_else(|| String::from("UNKNOWN_EXE_PATH"));
+
+        Some(WindowInfo {
+            hwnd: SafeHWND::new(hwnd_ptr),
+            title,
+            exe_path,
+            class_name,
+            size,
+            position,
+        })
+    }
+}
 /// List all visible windows with titles
 pub fn list_windows() -> Vec<WindowInfo> {
     let mut windows: Vec<WindowInfo> = Vec::new();
@@ -433,78 +868,48 @@ pub fn find_windows_by_title(title: &str) -> Vec<WindowInfo> {
         .collect()
 }
 
-// ============================================================================
-// Example Usage
-// ============================================================================
-
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod test_kee_window {
+    use crate::{kee_windows::MonitorManager, list_windows};
 
     #[test]
-    fn test_list_windows() {
-        let windows = list_windows();
-        println!("Found {} windows", windows.len());
-
-        for (i, window) in windows.iter().take(5).enumerate() {
-            println!("{}. {} - {}", i + 1, window.name(), window.title);
+    fn test_windows() {
+        for n in list_windows() {
+            println!("{:?}", &n);
         }
     }
 
     #[test]
-    fn test_find_and_focus() {
-        // Find a window by exe name
-        if let Some(window) = find_window_by_exe_name("notepad") {
-            println!("Found Notepad: {}", window.title);
+    fn test_monitors() {
+        println!(
+            "Primary monitor: {:?}",
+            MonitorManager::get_primary_monitor_size()
+        );
+        println!(
+            "Current monitor: {:?}",
+            MonitorManager::get_current_monitor_size()
+        );
 
-            if window.is_minimized() {
-                println!("Window is minimized, restoring...");
-                window.restore().ok();
+        let monitors = MonitorManager::enumerate_monitors();
+        println!("Found {} monitors:", monitors.len());
+        for (i, monitor) in monitors.iter().enumerate() {
+            println!("Monitor {}: {:?}", i + 1, monitor);
+        }
+    }
+
+    #[test]
+    fn test_window_monitor() {
+        for window in list_windows() {
+            if let Some(monitor) = window.get_monitor() {
+                println!(
+                    "{} is on monitor: {}x{} at ({}, {})",
+                    window.name(),
+                    monitor.width,
+                    monitor.height,
+                    monitor.x,
+                    monitor.y
+                );
             }
-
-            println!("Bringing to front...");
-            window.bring_to_front().ok();
-        } else {
-            println!("Notepad not found");
         }
-    }
-}
-
-// Example main function
-#[cfg(example)]
-fn main() {
-    println!("=== Window Manager Demo ===\n");
-
-    // List all windows
-    let windows = list_windows();
-    println!("Found {} windows:\n", windows.len());
-
-    for (i, window) in windows.iter().take(10).enumerate() {
-        println!("{}. {} ({})", i + 1, window.name(), window.title);
-    }
-
-    // Find and focus a specific window
-    println!("\n=== Finding Chrome ===");
-    if let Some(chrome) = find_window_by_exe_name("chrome") {
-        println!("Found: {} - {}", chrome.name(), chrome.title);
-        println!("Is minimized: {}", chrome.is_minimized());
-        println!("Is visible: {}", chrome.is_visible());
-
-        println!("\nBringing Chrome to front...");
-        match chrome.bring_to_front() {
-            Ok(_) => println!("Success!"),
-            Err(e) => println!("Error: {}", e),
-        }
-    } else {
-        println!("Chrome not found");
-    }
-
-    // Find all instances of an app
-    println!("\n=== Finding all Visual Studio Code windows ===");
-    let vscode_windows = find_windows_by_exe_name("code");
-    println!("Found {} VS Code windows", vscode_windows.len());
-
-    for window in vscode_windows {
-        println!("  - {}", window.title);
     }
 }
