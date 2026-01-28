@@ -1,18 +1,15 @@
 mod beep;
-mod config;
 mod kee_keys;
 mod kee_manager;
 mod kee_windows;
-mod lexer;
 use flume::{Receiver, Sender, unbounded};
 pub use kee_manager::TsckKeeManager;
 use parking_lot::Mutex;
 use std::sync::Arc;
 mod macros;
-use crate::{beep::BeepController, config::Config, kee_manager::Modifier};
+use crate::{beep::BeepController, kee_manager::Modifier};
 pub use kee_keys::{TKeePair, TKeePairList};
 pub use kee_windows::{get_current_active_window, list_windows};
-pub use lexer::{Command, Expr, parse_command};
 type EventHandler = Arc<dyn Fn(&Event) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
@@ -27,7 +24,6 @@ pub struct Kee {
     receiver: Receiver<Event>,
     handler: Option<EventHandler>,
     beep_controller: Option<Arc<Mutex<BeepController>>>,
-    config: Config,
 }
 
 impl Kee {
@@ -39,7 +35,6 @@ impl Kee {
             receiver: rx,
             handler: None,
             beep_controller: BeepController::new().ok().map(|f| Arc::new(Mutex::new(f))),
-            config: Config::new(),
         }
     }
 
@@ -50,13 +45,9 @@ impl Kee {
         self.handler = Some(Arc::new(f));
         self
     }
-    pub fn get_apps(&self) -> Vec<String> {
-        self.config.get_config().apps
-    }
 
-    fn register_hotkeys(&self) -> anyhow::Result<()> {
-        let config = self.config.get_config();
-        let keypairs = Arc::new(config.kees.0);
+    fn register_hotkeys(&self, kees: Vec<TKeePair>) -> anyhow::Result<()> {
+        let keypairs = Arc::new(kees);
         let keys = keypairs.iter().map(|kp| kp.key.as_str()).collect();
         let sender = self.sender.clone();
         let cloned_pairs = keypairs.clone();
@@ -85,8 +76,8 @@ impl Kee {
 
         Ok(())
     }
-    pub fn run(&self) {
-        if let Err(_) = self.register_hotkeys() {
+    pub fn run(&self, kees: Vec<TKeePair>) {
+        if let Err(_) = self.register_hotkeys(kees) {
             panic!("Failed to registering hotkey");
         }
 
@@ -105,8 +96,8 @@ impl Kee {
         });
     }
 
-    pub fn run_blocking(&self) {
-        if let Err(_) = self.register_hotkeys() {
+    pub fn run_blocking(&self, kees: Vec<TKeePair>) {
+        if let Err(_) = self.register_hotkeys(kees) {
             panic!("Failed to registering hotkey");
         }
         if let Some(ref handler) = self.handler {

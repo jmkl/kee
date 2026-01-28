@@ -1,4 +1,4 @@
-use kee::{Event, Kee};
+use kee::{Event, Kee, TKeePair, kpairs};
 use parking_lot::Mutex;
 use std::{sync::Arc, time::Instant};
 
@@ -41,7 +41,11 @@ fn find_window(search_mode: SearchMode, payload: &str) {
 
 fn main() -> anyhow::Result<()> {
     let mut kee = Kee::new();
-    let apps = Arc::new(Mutex::new(CycleApps::new(kee.get_apps())));
+    let kees = kpairs! {
+            (M-1	=>	app::FOO),
+            (M-2	=>	app::BAR)
+    };
+    let apps = Arc::new(Mutex::new(CycleApps::new(vec!["some".to_string()])));
     let clone_apps = apps.clone();
     kee.on_message(move |event| match event {
         Event::Keys(_, f) => {
@@ -90,7 +94,7 @@ fn main() -> anyhow::Result<()> {
         }
         _ => {}
     })
-    .run();
+    .run(kees);
 
     Ok(())
 }
