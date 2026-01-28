@@ -1,23 +1,22 @@
 mod beep;
-mod config;
 mod kee_keys;
 mod kee_manager;
 mod kee_windows;
-mod lexer;
 use flume::{Receiver, Sender, unbounded};
 pub use kee_manager::TsckKeeManager;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 mod macros;
-use crate::{beep::BeepController, config::Config, kee_manager::Modifier};
+use crate::{beep::BeepController, kee_manager::Modifier};
 pub use kee_keys::{TKeePair, TKeePairList};
-pub use kee_windows::{get_current_active_window, list_windows};
-pub use lexer::{Command, Expr, parse_command};
+pub use kee_windows::list_windows;
+pub use kee_windows::{SafeHWND, WindowInfo, get_current_active_window};
 type EventHandler = Arc<dyn Fn(&Event) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
 pub enum Event {
     Keys(String, String),
+    WindowChange(WindowInfo),
     Shutdown,
 }
 
@@ -27,7 +26,7 @@ pub struct Kee {
     receiver: Receiver<Event>,
     handler: Option<EventHandler>,
     beep_controller: Option<Arc<Mutex<BeepController>>>,
-    config: Config,
+    current_keypairs: Arc<RwLock<Vec<TKeePair>>>,
 }
 
 impl Kee {
@@ -39,7 +38,7 @@ impl Kee {
             receiver: rx,
             handler: None,
             beep_controller: BeepController::new().ok().map(|f| Arc::new(Mutex::new(f))),
-            config: Config::new(),
+            current_keypairs: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -50,22 +49,24 @@ impl Kee {
         self.handler = Some(Arc::new(f));
         self
     }
-    pub fn get_apps(&self) -> Vec<String> {
-        self.config.get_config().apps
-    }
 
-    fn register_hotkeys(&self) -> anyhow::Result<()> {
-        let config = self.config.get_config();
-        let keypairs = Arc::new(config.kees.0);
-        let keys = keypairs.iter().map(|kp| kp.key.as_str()).collect();
-        let sender = self.sender.clone();
-        let cloned_pairs = keypairs.clone();
+    fn register_hotkeys(&self, kees: Vec<TKeePair>) -> anyhow::Result<()> {
+        {
+            let mut current = self.current_keypairs.write();
+            *current = kees;
+        }
+
+        let keypairs_ref = self.current_keypairs.clone();
         let beep_controller = self.beep_controller.clone();
-        _ = self
-            .hotkey_manager
+        let keys = self.current_keypairs.read();
+        let keys = keys.iter().map(|kp| kp.key.as_str()).collect();
+        let sender = self.sender.clone();
+        self.hotkey_manager
             .register_hotkeys(keys, move |cb| match cb {
                 kee_manager::KeeEvent::OnKey(k) => {
-                    if let Some(pair) = cloned_pairs.iter().find(|p| p.key == k) {
+                    // Read from the stored keypairs (which can be updated!)
+                    let keypairs = keypairs_ref.read();
+                    if let Some(pair) = keypairs.iter().find(|p| p.key == k) {
                         _ = sender.send(Event::Keys(pair.key.clone(), pair.func.clone()));
                     }
                 }
@@ -81,12 +82,60 @@ impl Kee {
                         }
                     }
                 }
-            });
+                kee_manager::KeeEvent::OnWindowChange(safe_window_info) => {
+                    _ = sender.send(Event::WindowChange(safe_window_info));
+                }
+            })?;
 
         Ok(())
     }
-    pub fn run(&self) {
-        if let Err(_) = self.register_hotkeys() {
+
+    /// Update hotkeys at runtime
+    pub fn update_hotkeys(&self, kees: Vec<TKeePair>) -> anyhow::Result<()> {
+        println!("Updating hotkeys with {} new bindings", kees.len());
+
+        {
+            let mut current = self.current_keypairs.write();
+            *current = kees;
+        }
+
+        let keypairs_ref = self.current_keypairs.clone();
+        let beep_controller = self.beep_controller.clone();
+        let keys = self.current_keypairs.read();
+        let keys = keys.iter().map(|kp| kp.key.as_str()).collect();
+        let sender = self.sender.clone();
+        self.hotkey_manager
+            .update_hotkeys(keys, move |cb| match cb {
+                kee_manager::KeeEvent::OnKey(k) => {
+                    // Read from the stored keypairs (which were just updated!)
+                    let keypairs = keypairs_ref.read();
+                    if let Some(pair) = keypairs.iter().find(|p| p.key == k) {
+                        _ = sender.send(Event::Keys(pair.key.clone(), pair.func.clone()));
+                    }
+                }
+                kee_manager::KeeEvent::OnModifier(modifier, state) => {
+                    if modifier == Modifier::Win {
+                        if let Some(controller) = beep_controller.as_ref() {
+                            let mut guard = controller.lock();
+                            if state {
+                                guard.start();
+                            } else {
+                                guard.stop();
+                            }
+                        }
+                    }
+                }
+                kee_manager::KeeEvent::OnWindowChange(safe_window_info) => {
+                    _ = sender.send(Event::WindowChange(safe_window_info));
+                }
+            })?;
+
+        println!("Hotkeys updated successfully");
+        Ok(())
+    }
+
+    pub fn run(&self, kees: Vec<TKeePair>) {
+        if let Err(_) = self.register_hotkeys(kees) {
             panic!("Failed to registering hotkey");
         }
 
@@ -105,8 +154,8 @@ impl Kee {
         });
     }
 
-    pub fn run_blocking(&self) {
-        if let Err(_) = self.register_hotkeys() {
+    pub fn run_blocking(&self, kees: Vec<TKeePair>) {
+        if let Err(_) = self.register_hotkeys(kees) {
             panic!("Failed to registering hotkey");
         }
         if let Some(ref handler) = self.handler {

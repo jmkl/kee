@@ -1,4 +1,8 @@
-## USAGE UPDATE
+## KEE
+Kee is Keymap + Window Utilty  for windows
+
+
+## USAGE
 ```
 git clone https://github.com/jmkl/kee.git
 cd kee

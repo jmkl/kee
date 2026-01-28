@@ -1,5 +1,6 @@
 #![allow(unused)]
 use std::ffi::OsString;
+use std::fmt::Write;
 use std::{
     os::windows::ffi::OsStringExt,
     path::Path,
@@ -8,6 +9,14 @@ use std::{
 
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Accessibility::{
+    HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent, WINEVENTPROC,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EVENT_SYSTEM_FOREGROUND, GetMessageW, MSG, WINEVENT_OUTOFCONTEXT,
+};
+
+use crate::kee_manager::{CALLBACK_CHANNEL, KeeEvent};
 
 // ============================================================================
 // Type Definitions
@@ -120,6 +129,7 @@ unsafe extern "system" {
     fn GetForegroundWindow() -> HWND;
     fn IsWindow(hWnd: Hwnd) -> Bool;
     fn GetWindowTextLengthW(hWnd: Hwnd) -> i32;
+
     fn GetClassNameW(hwnd: Hwnd, lpclassname: *mut u16, nmaxcount: i32) -> i32;
     fn GetWindowTextW(hWnd: Hwnd, lpString: *mut u16, nMaxCount: i32) -> i32;
     fn GetWindowRect(hwnd: Hwnd, rect: *mut RECT) -> Bool;
@@ -171,7 +181,7 @@ unsafe extern "system" {
 // Data Structures
 // ============================================================================
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub struct SafeHWND(pub Hwnd);
 
 unsafe impl Send for SafeHWND {}
@@ -187,28 +197,30 @@ impl SafeHWND {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WinSize {
     pub width: i32,
     pub height: i32,
 }
-impl WinSize {
-    pub fn display(&self) -> String {
-        format!("[w:{}, h:{}]", self.width, self.height)
+
+impl std::fmt::Display for WinSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.width, self.height)
     }
 }
-#[derive(Debug, Clone)]
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct WinPos {
     pub x: i32,
     pub y: i32,
 }
-impl WinPos {
-    pub fn display(&self) -> String {
-        format!("[x:{}, y:{}]", self.x, self.y)
+impl std::fmt::Display for WinPos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowInfo {
     pub hwnd: SafeHWND,
     title: String,
@@ -216,6 +228,7 @@ pub struct WindowInfo {
     class_name: String,
     size: WinSize,
     position: WinPos,
+    workspace: i32,
 }
 
 impl WindowInfo {
@@ -229,6 +242,9 @@ impl WindowInfo {
 
     pub fn class(&self) -> &String {
         &self.class_name
+    }
+    pub fn workspace(&self) -> i32 {
+        self.workspace
     }
 
     pub fn size(&self) -> &WinSize {
@@ -654,7 +670,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: Hwnd, lparam: LParam) -> B
     let (size, position) = get_window_size_and_position(hwnd);
     // Get process executable path
     let exe_path = get_process_path(hwnd).unwrap_or_else(|| String::from("UNKNOWN_EXE_PATH"));
-
+    let (y, h) = (position.y, size.height);
     windows.push(WindowInfo {
         hwnd: SafeHWND::new(hwnd),
         title,
@@ -662,9 +678,45 @@ unsafe extern "system" fn enum_windows_callback(hwnd: Hwnd, lparam: LParam) -> B
         class_name,
         size,
         position,
+        workspace: get_current_workspace(y, h),
     });
 
     TRUE // Continue enumeration
+}
+
+unsafe extern "system" fn win_event_proc(
+    _h_win_event_hook: HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _id_event_thread: u32,
+    _dwms_event_time: u32,
+) {
+    let hwnd = hwnd.0;
+    let class_name = get_class_name(hwnd).unwrap_or_else(|| String::from("UNKNOWN_CLASS"));
+
+    // Get window title
+    let title = match get_window_title(hwnd) {
+        Some(t) if !t.is_empty() => t,
+        _ => return, // Skip windows without titles
+    };
+    let (size, position) = get_window_size_and_position(hwnd);
+    // Get process executable path
+    let exe_path = get_process_path(hwnd).unwrap_or_else(|| String::from("UNKNOWN_EXE_PATH"));
+    let (y, h) = (position.y, size.height);
+    let win_info = WindowInfo {
+        hwnd: SafeHWND::new(hwnd),
+        title,
+        exe_path,
+        class_name,
+        size,
+        position,
+        workspace: get_current_workspace(y, h),
+    };
+    if let Some(tx) = CALLBACK_CHANNEL.get() {
+        let _ = tx.try_send(KeeEvent::OnWindowChange(win_info));
+    }
 }
 
 unsafe extern "system" fn enum_monitor_callback(
@@ -774,6 +826,21 @@ fn get_window_size_and_position(hwnd: Hwnd) -> (WinSize, WinPos) {
 
     (WinSize { width, height }, WinPos { x, y })
 }
+const MONITOR_H: i32 = 1440;
+fn get_current_workspace(y: i32, window_h: i32) -> i32 {
+    if window_h <= 0 {
+        return 0;
+    }
+
+    // Shift so partially visible windows stay in workspace 0
+    let shifted = y + window_h;
+
+    if shifted <= 0 {
+        (-shifted).div_euclid(MONITOR_H)
+    } else {
+        shifted.div_euclid(MONITOR_H)
+    }
+}
 
 // ============================================================================
 // Public API
@@ -804,6 +871,7 @@ pub fn get_current_active_window() -> Option<WindowInfo> {
         let (size, position) = get_window_size_and_position(hwnd_ptr);
         let exe_path =
             get_process_path(hwnd_ptr).unwrap_or_else(|| String::from("UNKNOWN_EXE_PATH"));
+        let (y, h) = (position.y, size.height);
 
         Some(WindowInfo {
             hwnd: SafeHWND::new(hwnd_ptr),
@@ -812,6 +880,7 @@ pub fn get_current_active_window() -> Option<WindowInfo> {
             class_name,
             size,
             position,
+            workspace: get_current_workspace(y, h),
         })
     }
 }
@@ -868,9 +937,31 @@ pub fn find_windows_by_title(title: &str) -> Vec<WindowInfo> {
         .collect()
 }
 
+pub fn spawn_active_window_listener() {
+    unsafe {
+        let hook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            // _ = TranslateMessage(&msg);
+            // _ = DispatchMessageW(&msg);
+        }
+
+        UnhookWinEvent(hook);
+    }
+}
+
 #[cfg(test)]
 mod test_kee_window {
-    use crate::{kee_windows::MonitorManager, list_windows};
+    use crate::kee_windows::{MonitorManager, list_windows};
 
     #[test]
     fn test_windows() {

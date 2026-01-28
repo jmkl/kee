@@ -16,9 +16,11 @@ rodio = { version = "0.21.1", features = ["mp3"] }
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0.145" }
 windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_System_LibraryLoader",
   "Win32_System_Threading",
+  "Win32_UI_Accessibility",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging"
