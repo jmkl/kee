@@ -1,4 +1,7 @@
-use crate::kee_keys::TsckKeeBinding;
+use crate::{
+    kee_keys::TsckKeeBinding,
+    kee_windows::{WindowInfo, spawn_active_window_listener},
+};
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -16,6 +19,7 @@ use windows::Win32::{
 pub enum KeeEvent {
     OnKey(String),
     OnModifier(Modifier, bool),
+    OnWindowChange(WindowInfo),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +39,7 @@ struct HotkeyState {
 }
 
 static KEE_STATE: OnceLock<Mutex<HotkeyState>> = OnceLock::new();
-static CALLBACK_CHANNEL: OnceLock<flume::Sender<KeeEvent>> = OnceLock::new();
+pub(crate) static CALLBACK_CHANNEL: OnceLock<flume::Sender<KeeEvent>> = OnceLock::new();
 
 #[derive(Debug)]
 pub struct TsckKeeManager;
@@ -84,6 +88,11 @@ impl TsckKeeManager {
                 if let Err(e) = UnhookWindowsHookEx(hook) {
                     eprintln!("Failed to unhook keyboard hook: {:?}", e);
                 }
+            });
+        let _ = std::thread::Builder::new()
+            .name("active-window-hook".to_string())
+            .spawn(|| {
+                spawn_active_window_listener();
             });
         std::thread::sleep(std::time::Duration::from_millis(50));
         Self
@@ -139,6 +148,34 @@ impl TsckKeeManager {
         let mut hotkeys = state.lock();
         hotkeys.event_callbacks.push(std::sync::Arc::new(callback));
         println!("Registered event callback");
+    }
+    pub fn clear_hotkeys(&self) {
+        let state = KEE_STATE
+            .get()
+            .expect("HOTKEY_STATE should be initialized in new()");
+
+        let mut hotkeys_map = state.lock();
+        hotkeys_map.hotkey_names.clear();
+        println!("Cleared all registered hotkeys");
+    }
+
+    pub fn clear_event_callbacks(&self) {
+        let state = KEE_STATE
+            .get()
+            .expect("HOTKEY_STATE should be initialized in new()");
+
+        let mut hotkeys = state.lock();
+        hotkeys.event_callbacks.clear();
+        println!("Cleared all event callbacks");
+    }
+
+    pub fn update_hotkeys<M>(&self, hotkeys: Vec<&str>, mod_callback: M) -> anyhow::Result<()>
+    where
+        M: Fn(KeeEvent) + Send + Sync + 'static,
+    {
+        self.clear_hotkeys();
+        self.clear_event_callbacks();
+        self.register_hotkeys(hotkeys, mod_callback)
     }
 
     pub fn event_loop(&self) {
