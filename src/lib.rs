@@ -11,6 +11,7 @@ use crate::{beep::BeepController, kee_manager::Modifier};
 pub use kee_keys::{TKeePair, TKeePairList};
 pub use kee_windows::list_windows;
 pub use kee_windows::{SafeHWND, WindowInfo, get_current_active_window};
+pub use kee_windows::{get_current_active_window, list_windows};
 type EventHandler = Arc<dyn Fn(&Event) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,10 @@ impl Kee {
         }
 
         let keypairs_ref = self.current_keypairs.clone();
+        let keypairs = Arc::new(kees);
+        let keys = keypairs.iter().map(|kp| kp.key.as_str()).collect();
+        let sender = self.sender.clone();
+        let cloned_pairs = keypairs.clone();
         let beep_controller = self.beep_controller.clone();
         let keys = self.current_keypairs.read();
         let keys = keys.iter().map(|kp| kp.key.as_str()).collect();
